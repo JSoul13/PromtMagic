@@ -1,0 +1,8 @@
+# If you have a local Ollama, set these (no cloud key needed)
+# OLLAMA_URL=http://localhost:11434
+# OLLAMA_MODEL=deepseek-r1:latest
+# Otherwise, use OpenRouter (DeepSeek in the cloud)
+# OPENROUTER_API_KEY=sksk-1234567890abcdef1234567890abcdef12345678
+# OPENROUTER_MODEL=deepseek/deepseek-chat
+
+PORT=3000
