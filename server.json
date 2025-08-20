@@ -1,0 +1,96 @@
+import express from 'express';
+import dotenv from 'dotenv';
+import fetch from 'node-fetch';
+
+dotenv.config();
+const app = express();
+app.use(express.json());
+app.use(express.static('public'));
+
+// Config: keep secrets on server only
+const OLLAMA_URL = process.env.OLLAMA_URL || ''; // e.g., http://localhost:11434
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'deepseek-r1:latest';
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-chat';
+
+// Build a compact instruction to the LLM — must return ONLY the final revised prompt
+function systemPrompt() {
+  return [
+    "You are a prompt refiner. Rewrite the user's idea as a single, clean prompt addressed to an AI.",
+    "No preface, no headings, no bullet lists, no meta-instructions (e.g., 'Act as', 'Include', 'Format as', 'Tone:', 'Length:').",
+    "No placeholders like [TARGET_AUDIENCE].",
+    "Aim for one to two sentences maximum.",
+    "Return ONLY the refined prompt text."
+  ].join(" ");
+}
+
+// Sanitize any accidental meta text
+function sanitize(txt) {
+  if (!txt) return "";
+  let out = txt.trim();
+  // Strip code fences
+  out = out.replace(/```[\s\S]*?```/g, m => m.replace(/```[a-zA-Z]*\n?|```/g, ""));
+  // Remove typical meta phrases at start
+  out = out.replace(/^(?:you are|act as|include:|rules:|requirements:|format the output|tone:|length:).*/gim, '').trim();
+  // If line breaks with bullets, collapse to a sentence
+  out = out.replace(/^[\-\*]\s.*$/gim, '').replace(/\n{2,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  // Ensure it's one or two sentences
+  const sentences = out.split(/(?<=[.!?])\s+/).filter(Boolean);
+  if (sentences.length > 2) out = sentences.slice(0, 2).join(' ');
+  return out;
+}
+
+async function callOllama(idea) {
+  const prompt = `${systemPrompt()} USER IDEA: ${idea}`;
+  const url = `${OLLAMA_URL.replace(/\/$/, '')}/api/generate`;
+  const body = { model: OLLAMA_MODEL, prompt, stream: false, options: { temperature: 0.3 } };
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`Ollama ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  return sanitize(j.response || '');
+}
+
+async function callOpenRouter(idea) {
+  if (!OPENROUTER_KEY) throw new Error('Missing OPENROUTER_API_KEY');
+  const body = {
+    model: OPENROUTER_MODEL,
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: systemPrompt() },
+      { role: 'user', content: idea }
+    ]
+  };
+  const r = await fetch(OPENROUTER_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENROUTER_KEY}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) throw new Error(`OpenRouter ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  const content = j?.choices?.[0]?.message?.content || '';
+  return sanitize(content);
+}
+
+app.post('/refine', async (req, res) => {
+  try {
+    const idea = (req.body?.idea || '').toString().trim();
+    if (!idea) return res.status(400).json({ error: 'idea is required' });
+    let prompt = '';
+    if (OLLAMA_URL) {
+      prompt = await callOllama(idea);
+    } else {
+      prompt = await callOpenRouter(idea);
+    }
+    return res.json({ prompt });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || 'Internal error' });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Prompt refiner running on http://localhost:${PORT}`));
