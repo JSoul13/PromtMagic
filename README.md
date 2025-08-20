@@ -1,0 +1,2 @@
+# PromtMagic
+Prompt Magic 
